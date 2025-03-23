@@ -34,4 +34,5 @@
 #ide
 .pio
 .vscode
-sdkconfig*
+*.old
+.qodo
