@@ -1,3 +1,4 @@
+
 #include <freertos/FreeRTOS.h>
 #include <driver/gpio.h>
 #include "freertos/task.h"
@@ -6,11 +7,13 @@
 #include <WiFi.h>
 #include "esp_log.h"
 #include <esp32-hal-log.h>
-
-#define LOG_LOCAL_LEVEL ESP_LOG_DEBUG
+#include <ArduinoOTA.h>
+#include <Preferences.h>
 
 static const char *TAG = "main";
-
+#define HOSTNAME "hydroponic-controller"
+std::string my_ssid = "";
+std::string my_password = "";
 // Function Prototypes
 void setup_wifi();
 void setup_gpio();
@@ -41,24 +44,93 @@ typedef enum
 static StaticQueue_t water_level_buffer;
 uint8_t water_level_storage[CONFIG_DATASEND_QUEUE_SIZE * DATASEND_QUEUE_ITEM_SIZE];
 
-// WiFi Credentials
-const char *ssid = "hydropone";
-const char *password = "123456789";
-// WiFi Server
-WiFiServer server(80);
-void setup_wifi()
+void load_credentials()
 {
-    WiFi.mode(WIFI_AP);
-    if (WiFi.softAP(ssid, password))
+    ESP_LOGI(TAG, "Loading WiFi credentials");
+    if (my_ssid == "" || my_password == "")
     {
-        ESP_LOGI(TAG, "WiFi AP started successfully. AP IP address: %s", WiFi.softAPIP().toString().c_str());
-        server.begin();
-        ESP_LOGI(TAG, "WiFi Server started and listening for connections.");
+        return;
     }
     else
     {
-        ESP_LOGE(TAG, "Failed to start WiFi AP. Please check credentials and try again.");
+        Preferences preferences;
+        String ssid;
+        String pass;
+        preferences.begin("wifi", true);
+        preferences.getString("my_ssid", ssid);
+        preferences.getString("my_password", pass);
+        my_ssid = ssid.c_str();
+        my_password = pass.c_str();
+        ESP_LOGI(TAG, "Loaded WiFi credentials. SSID: %s, Password: %s", my_ssid.c_str(), my_password.c_str()); // TODO: удалить
+        preferences.end();
     }
+}
+
+void save_credentials()
+{
+    ESP_LOGI(TAG, "Saving WiFi credentials");
+    if (my_ssid != "" || my_password != "")
+    {
+        ESP_LOGI(TAG, "Saving WiFi credentials. SSID: %s, Password: %s", my_ssid.c_str(), my_password.c_str()); // TODO: удалить
+        Preferences preferences;
+        preferences.begin("wifi", false);
+        preferences.putString("my_ssid", my_ssid.c_str());
+        preferences.putString("my_password", my_password.c_str());
+        preferences.end();
+    }
+}
+
+void setup_wifi()
+{
+    ESP_LOGI(TAG, "Starting WiFi in AP mode. SSID: %s", my_ssid.c_str());
+    WiFi.setHostname(HOSTNAME);
+    WiFi.begin(my_ssid.c_str(), my_password.c_str());
+
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+        Serial.println("Connecting to WiFi..");
+    }
+    ESP_LOGI(TAG, "WiFi connected. IP address: %s", WiFi.localIP().toString().c_str());
+}
+
+void setup_ota()
+{
+
+    ArduinoOTA.setHostname(HOSTNAME);
+
+    ArduinoOTA
+        .onStart([]()
+                 {
+        String type;
+        if (ArduinoOTA.getCommand() == U_FLASH)
+            type = "sketch";
+        else // U_SPIFFS
+            type = "filesystem";
+
+        // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+        Serial.println("Start updating " + type); })
+        .onEnd([]()
+               {
+        Serial.println("\nEnd");
+        ESP.restart(); })
+        .onProgress([](unsigned int progress, unsigned int total)
+                    { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); })
+        .onError([](ota_error_t error)
+                 {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR)
+            Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR)
+            Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR)
+            Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR)
+            Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR)
+            Serial.println("End Failed"); });
+
+    ArduinoOTA.begin();
 }
 
 void setup_gpio()
@@ -144,19 +216,43 @@ void loop_level_water(void *param)
 
 void setup()
 {
+
+    // Setup Logging
     esp_log_level_set(TAG, ESP_LOG_VERBOSE);
     Serial.setDebugOutput(true);
     Serial.begin(115200);
+
+    // Set CPU Frequency
+    setCpuFrequencyMhz(100);
+
+    // Initialize GPIO
     setup_gpio();
+
+    // Initialize WiFi
+    if (my_ssid.length() == 0 || my_password.length() == 0)
+    {
+        ESP_LOGI(TAG, "No WiFi credentials found. Starting in AP mode.");
+        load_credentials();
+    }
+    else
+    {
+        ESP_LOGI(TAG, "WiFi credentials found. Starting in STA mode.");
+        save_credentials();
+    }
+
     setup_wifi();
+
+    setup_ota();
 
     QueueHandle_t water_level = xQueueCreateStatic(CONFIG_DATASEND_QUEUE_SIZE, DATASEND_QUEUE_ITEM_SIZE, water_level_storage, &water_level_buffer);
 
+    // Controller water level
     if (xTaskCreate(loop_level_water, "loop_level_water", 4096, (void *)water_level, 1, NULL) != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create loop_level_water task. Check system resources.");
     }
 
+    // Pump
     if (xTaskCreate(loop_pump, "loop_pump", 4096, (void *)water_level, 2, NULL) != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create loop_pump task. Check system resources.");
@@ -165,10 +261,4 @@ void setup()
 
 void loop()
 {
-    WiFiClient client = server.available();
-    if (client)
-    {
-        ESP_LOGI(TAG, "New client connected to the server.");
-    }
 }
-
