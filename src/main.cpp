@@ -9,11 +9,12 @@
 #include <esp32-hal-log.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
-
+#include <PicoSyslog.h>
 static const char *TAG = "main";
 #define HOSTNAME "hydroponic-controller"
 std::string my_ssid = "";
 std::string my_password = "";
+PicoSyslog::Logger syslog("esp");  // Use "esp" as the name/tag for syslog
 // Function Prototypes
 void setup_wifi();
 void setup_gpio();
@@ -89,7 +90,7 @@ void setup_wifi()
     while (WiFi.status() != WL_CONNECTED)
     {
         delay(500);
-        Serial.println("Connecting to WiFi..");
+        ESP_LOGI(TAG, "Connecting to WiFi..");
     }
     ESP_LOGI(TAG, "WiFi connected. IP address: %s", WiFi.localIP().toString().c_str());
 }
@@ -98,7 +99,7 @@ void setup_ota()
 {
 
     ArduinoOTA.setHostname(HOSTNAME);
-
+    ArduinoOTA.setPort(3232);
     ArduinoOTA
         .onStart([]()
                  {
@@ -109,26 +110,26 @@ void setup_ota()
             type = "filesystem";
 
         // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-        Serial.println("Start updating " + type); })
+        ESP_LOGI(TAG, "Start updating %s", type.c_str()); })
         .onEnd([]()
                {
-        Serial.println("\nEnd");
+        ESP_LOGI(TAG, "End");
         ESP.restart(); })
         .onProgress([](unsigned int progress, unsigned int total)
-                    { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); })
+                    { ESP_LOGI(TAG, "Progress: %u%%\r", (progress / (total / 100))); })
         .onError([](ota_error_t error)
                  {
-        Serial.printf("Error[%u]: ", error);
+        ESP_LOGE(TAG, "Error[%u]: ", error);
         if (error == OTA_AUTH_ERROR)
-            Serial.println("Auth Failed");
+            ESP_LOGE(TAG, "Auth Failed");
         else if (error == OTA_BEGIN_ERROR)
-            Serial.println("Begin Failed");
+            ESP_LOGE(TAG, "Begin Failed");
         else if (error == OTA_CONNECT_ERROR)
-            Serial.println("Connect Failed");
+            ESP_LOGE(TAG, "Connect Failed");
         else if (error == OTA_RECEIVE_ERROR)
-            Serial.println("Receive Failed");
+            ESP_LOGE(TAG, "Receive Failed");
         else if (error == OTA_END_ERROR)
-            Serial.println("End Failed"); });
+            ESP_LOGE(TAG, "End Failed"); });
 
     ArduinoOTA.begin();
 }
@@ -244,6 +245,8 @@ void setup()
 
     setup_ota();
 
+    syslog.server = "192.168.3.246";
+
     QueueHandle_t water_level = xQueueCreateStatic(CONFIG_DATASEND_QUEUE_SIZE, DATASEND_QUEUE_ITEM_SIZE, water_level_storage, &water_level_buffer);
 
     // Controller water level
@@ -261,4 +264,5 @@ void setup()
 
 void loop()
 {
+    ArduinoOTA.handle();
 }
