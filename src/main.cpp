@@ -9,12 +9,12 @@
 #include <esp32-hal-log.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
-#include <PicoSyslog.h>
+#include <GyverOLED.h>
+GyverOLED<SSD1306_128x64, OLED_NO_BUFFER> oled;
 static const char *TAG = "main";
 #define HOSTNAME "hydroponic-controller"
 std::string my_ssid = "";
 std::string my_password = "";
-PicoSyslog::Logger syslog("esp");  // Use "esp" as the name/tag for syslog
 // Function Prototypes
 void setup_wifi();
 void setup_gpio();
@@ -25,6 +25,8 @@ void setup_gpio();
 #define LEVEL_TWO GPIO_NUM_38
 #define LEVEL_THREE GPIO_NUM_37
 #define LEVEL_FOUR GPIO_NUM_35
+#define SDA GPIO_NUM_5
+#define SCL GPIO_NUM_6
 
 // Timing Constants
 #define ON_TIME 1000
@@ -45,40 +47,38 @@ typedef enum
 static StaticQueue_t water_level_buffer;
 uint8_t water_level_storage[CONFIG_DATASEND_QUEUE_SIZE * DATASEND_QUEUE_ITEM_SIZE];
 
+void print_oled(const char *message) {
+    oled.clear();
+    oled.home();
+    oled.print(message);
+}
+
 void load_credentials()
 {
     ESP_LOGI(TAG, "Loading WiFi credentials");
-    if (my_ssid == "" || my_password == "")
-    {
-        return;
-    }
-    else
-    {
-        Preferences preferences;
-        String ssid;
-        String pass;
-        preferences.begin("wifi", true);
-        preferences.getString("my_ssid", ssid);
-        preferences.getString("my_password", pass);
-        my_ssid = ssid.c_str();
-        my_password = pass.c_str();
-        ESP_LOGI(TAG, "Loaded WiFi credentials. SSID: %s, Password: %s", my_ssid.c_str(), my_password.c_str()); // TODO: удалить
-        preferences.end();
-    }
+
+    Preferences preferences;
+    String ssid;
+    String pass;
+    preferences.begin("wifi", true);
+    preferences.getString("my_ssid", ssid);
+    preferences.getString("my_password", pass);
+    my_ssid = ssid.c_str();
+    my_password = pass.c_str();
+    ESP_LOGI(TAG, "Loaded WiFi credentials. SSID: %s, Password: %s", my_ssid.c_str(), my_password.c_str()); // TODO: удалить
+    preferences.end();
 }
 
 void save_credentials()
 {
     ESP_LOGI(TAG, "Saving WiFi credentials");
-    if (my_ssid != "" || my_password != "")
-    {
-        ESP_LOGI(TAG, "Saving WiFi credentials. SSID: %s, Password: %s", my_ssid.c_str(), my_password.c_str()); // TODO: удалить
-        Preferences preferences;
-        preferences.begin("wifi", false);
-        preferences.putString("my_ssid", my_ssid.c_str());
-        preferences.putString("my_password", my_password.c_str());
-        preferences.end();
-    }
+
+    ESP_LOGI(TAG, "Saving WiFi credentials. SSID: %s, Password: %s", my_ssid.c_str(), my_password.c_str()); // TODO: удалить
+    Preferences preferences;
+    preferences.begin("wifi", false);
+    preferences.putString("my_ssid", my_ssid.c_str());
+    preferences.putString("my_password", my_password.c_str());
+    preferences.end();
 }
 
 void setup_wifi()
@@ -91,8 +91,12 @@ void setup_wifi()
     {
         delay(500);
         ESP_LOGI(TAG, "Connecting to WiFi..");
+        print_oled("Connecting to WiFi...");
     }
-    ESP_LOGI(TAG, "WiFi connected. IP address: %s", WiFi.localIP().toString().c_str());
+    auto ip =  WiFi.localIP().toString();
+    ESP_LOGI(TAG, "WiFi connected. IP address: %s", ip.c_str());
+    print_oled(("IP: " + ip).c_str());
+    delay(2500);
 }
 
 void setup_ota()
@@ -154,6 +158,19 @@ void setup_gpio()
     ESP_LOGI(TAG, "GPIO setup complete. All pins configured successfully.");
 }
 
+void setup_oled()
+{
+    oled.clear();
+    oled.print("Booting...");
+    oled.init(SDA, SCL);    
+    oled.clear();
+    oled.autoPrintln(true);
+    oled.setScale(1);
+    ESP_LOGI(TAG, "Oled setup complete.");
+}
+
+
+
 void loop_pump(void *param)
 {
     QueueHandle_t queue = (QueueHandle_t)param;
@@ -173,9 +190,11 @@ void loop_pump(void *param)
         }
         gpio_set_level(PUMP, 1);
         ESP_LOGI(TAG, "Pump is ON. Water is being pumped.");
+        print_oled("PUMP ON");
         vTaskDelay(ON_TIME / portTICK_PERIOD_MS);
         gpio_set_level(PUMP, 0);
         ESP_LOGI(TAG, "Pump is OFF. Waiting for next cycle.");
+        print_oled("PUMP OFF");
         vTaskDelay(OFF_TIME / portTICK_PERIOD_MS);
     }
 }
@@ -189,24 +208,28 @@ void loop_level_water(void *param)
         if (gpio_get_level(LEVEL_FOUR))
         {
             ESP_LOGI(TAG, "LEVEL FOUR detected. Sending alert to pump control.");
+            print_oled("LEVEL: 4");
             level = LOW_FOUR;
             xQueueSend(dataSendQueue, &level, 0);
         }
         else if (gpio_get_level(LEVEL_THREE))
         {
             ESP_LOGI(TAG, "LEVEL THREE detected.");
+            print_oled("LEVEL: 3");
             level = LOW_THREE;
             xQueueSend(dataSendQueue, &level, 0);
         }
         else if (gpio_get_level(LEVEL_TWO))
         {
             ESP_LOGI(TAG, "LEVEL TWO detected.");
+            print_oled("LEVEL: 2");
             level = LOW_TWO;
             xQueueSend(dataSendQueue, &level, 0);
         }
         else if (gpio_get_level(LEVEL_ONE))
         {
             ESP_LOGI(TAG, "LEVEL ONE detected.");
+            print_oled("LEVEL: 1");
             level = LOW_ONE;
             xQueueSend(dataSendQueue, &level, 0);
         }
@@ -223,29 +246,26 @@ void setup()
     Serial.setDebugOutput(true);
     Serial.begin(115200);
 
-    // Set CPU Frequency
-    setCpuFrequencyMhz(100);
+
 
     // Initialize GPIO
     setup_gpio();
+    setup_oled();
 
+    print_oled("Hydroponic Controller");
     // Initialize WiFi
-    if (my_ssid.length() == 0 || my_password.length() == 0)
-    {
-        ESP_LOGI(TAG, "No WiFi credentials found. Starting in AP mode.");
-        load_credentials();
-    }
-    else
-    {
-        ESP_LOGI(TAG, "WiFi credentials found. Starting in STA mode.");
-        save_credentials();
-    }
+
+    // ESP_LOGI(TAG, "No WiFi credentials found. Starting in AP mode.");
+    // load_credentials();
+
+    // ESP_LOGI(TAG, "WiFi credentials found. Starting in STA mode.");
+    // save_credentials();
 
     setup_wifi();
 
     setup_ota();
 
-    syslog.server = "192.168.3.246";
+
 
     QueueHandle_t water_level = xQueueCreateStatic(CONFIG_DATASEND_QUEUE_SIZE, DATASEND_QUEUE_ITEM_SIZE, water_level_storage, &water_level_buffer);
 
@@ -260,6 +280,7 @@ void setup()
     {
         ESP_LOGE(TAG, "Failed to create loop_pump task. Check system resources.");
     }
+    oled.setScale(2);
 }
 
 void loop()
