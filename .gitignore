@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+#ide
+.pio
+.vscode
+*.old
+.qodo
